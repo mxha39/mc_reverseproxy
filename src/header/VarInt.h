@@ -12,8 +12,8 @@ private:
 public:
     VarInt(uint32_t v = 0);
     uint32_t getValue() const;
-    void readFromSocket(int socketfd);
-    void writeToSocket(int socketfd) const;
+    bool readFromSocket(int socketfd);
+    bool writeToSocket(int socketfd) const;
 
     uint32_t size() const;
 

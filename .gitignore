@@ -1,2 +1,4 @@
 .vscode
 build/*
+routes.json
+config.json

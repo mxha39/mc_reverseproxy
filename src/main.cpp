@@ -1,74 +1,15 @@
 #include <iostream>
 #include <vector>
-#include <mutex>
+#include "header/caching.h"
 #include "header/Packet.h"
-#include "utils.cpp"
-
+#include "header/routes.h"
+#include "header/utils.h"
+#include <arpa/inet.h>
+#include <thread>
+#include "config.cpp"
+#include "packets.cpp"
 
 using namespace std;
-
-struct Handshake_Packet {
-    VarInt version;
-    string hostname;
-    uint16_t port;
-    VarInt nextState;
-    void readFromBuffer(Buffer *buf) {
-        version = buf->readVarInt();
-        hostname = buf->readString();
-        port = buf->readShort();
-        nextState = buf->readVarInt();
-    }
-
-    void writeToBuffer(Buffer *buf) {
-        buf->clear();
-        buf->writeVarInt(version);
-        buf->writeString(hostname);
-        buf->writeShort(port);
-        buf->writeVarInt(nextState);
-    }
-};
-
-struct LoginPacket {
-    string username;
-    UUID uuid;
-    void readFromBuffer(Buffer *buf) {
-        username = buf->readString();
-        char uid[16];
-        for (int i = 0; i < 16; i++) {
-            uid[i] = buf->readByte();
-        }
-        uuid = uid;        
-    }
-    void writeToBuffer(Buffer *buf) {
-        buf->writeString(username);
-        for (int i = 0; i < 16; i++) {
-            buf->writeByte(uuid.get()[i]);
-        }
-    }
-};
-struct Route {
-    string hostname;
-    string address;
-    uint16_t port;
-};
-mutex routesMux;
-
-vector<Route> routes = {
-    {"hyp.local","hypixel.net", 25565},
-    {"timolia.local", "timolia.de",25565},
-    {"gomme.local", "gommehd.net", 25565}
-};
-
-Route* findRoute(const string& hostname) {
-    lock_guard<mutex> lock(routesMux);
-    for (auto& route : routes) {
-        if (route.hostname == hostname) {
-            return &route;
-        }
-    }
-    return nullptr;
-}
-
 
 
 enum Placeholder_state {
@@ -76,8 +17,23 @@ enum Placeholder_state {
     UNKNOWN = 2
 };
 
+
+void handle_ping(int socketfd) {
+    unique_ptr<Packet> packet = make_unique<Packet>();
+    packet->clear();
+    if(packet->ReadFromSocket(socketfd)) {
+        return;
+    }
+    if (packet->ID.getValue() != 0x01) {
+        return;
+    }
+    packet->WriteToSocket(socketfd);
+    return;
+}
+
 void handle_placeholder(int client_socket, uint32_t next_state, Placeholder_state state) {
     unique_ptr<Packet> packet = make_unique<Packet>();
+
     if ((*packet).ReadFromSocket(client_socket)) {
         cout << "close" << endl;
         close(client_socket);
@@ -104,15 +60,10 @@ void handle_placeholder(int client_socket, uint32_t next_state, Placeholder_stat
     }
     packet->WriteToSocket(client_socket);
 
-    packet->clear();
-    packet->ReadFromSocket(client_socket);
-    if (packet->ID.getValue() != 0x01) {
-        return;
-    }
-    packet->WriteToSocket(client_socket);
-
+    handle_ping(client_socket);
     return;
 }
+
 
 
 void handle_client(int client_socket) {
@@ -123,31 +74,59 @@ void handle_client(int client_socket) {
         return;
     }
 
-    Handshake_Packet hs;
-    hs.readFromBuffer(&(packet->data));
+    unique_ptr<Handshake_Packet> hs = make_unique<Handshake_Packet>();
+    hs->readFromBuffer(&(packet->data));
 
-    Route* r = findRoute(hs.hostname);
+    Route* r = findRoute(hs->hostname);
 
     if (r == nullptr) {
-        handle_placeholder(client_socket, hs.nextState.getValue(), UNKNOWN);
+        handle_placeholder(client_socket, hs->nextState.getValue(), UNKNOWN);
         close(client_socket);
         return;
     }
-    hs.hostname = r->address;
-    hs.writeToBuffer(&(packet->data));
-    
-    string resolved_addr = resolve_minecraft_srv(r->address);
+
+    hs->hostname = r->address;
+    hs->writeToBuffer(&(packet->data));
+    shared_ptr<CachedServer> cs = findCachedServer(r);
+    if(hs->nextState.getValue() == 1&& cs != nullptr) {
+        if (cs->isExpired()) {
+            if(cs->update() < 0 ) {
+                handle_placeholder(client_socket, hs->nextState.getValue(), OFFLINE);
+                close(client_socket);
+                return;
+            }
+        }
+
+        if ((*packet).ReadFromSocket(client_socket)) {
+            close(client_socket);
+            return;
+        }
+        if (packet->ID.getValue() != 0x00) {
+            return;
+        }
+
+        packet->clear();
+        packet->ID = 0x00;
+        packet->data.writeString(cs->get_status_response());
+        packet->WriteToSocket(client_socket);
+        handle_ping(client_socket);
+        close(client_socket);
+        return;
+    }
+
+    string resolved_addr = resolve_minecraft_srv(r->address, r->port);
     string addr = resolved_addr.substr(0, resolved_addr.find(":"));
     int port = stoi(resolved_addr.substr(resolved_addr.find(":") + 1));
     resolveARecord(&addr);
 
     int target_sock = dial(addr, port);
     if (target_sock < 0) {
+        handle_placeholder(client_socket, hs->nextState.getValue(), OFFLINE);
         close(client_socket);
         close(target_sock);
         return;
     }
-
+    
     if ((*packet).WriteToSocket(target_sock)) {
         close(client_socket);
         close(target_sock);
@@ -155,7 +134,8 @@ void handle_client(int client_socket) {
     }
 
 
-    if (hs.nextState.getValue() == 2) {
+
+    if (hs->nextState.getValue() == 2) {
         //read login packet
         packet->clear();
         if ((*packet).ReadFromSocket(client_socket)) {
@@ -178,25 +158,28 @@ void handle_client(int client_socket) {
         socklen_t addr_size = sizeof(addr);
         getpeername(client_socket, (struct sockaddr *)&addr, &addr_size);
         client_IP = inet_ntoa(addr.sin_addr);
-        
-
-
         cout << "User " << lp->username <<  " (" << client_IP << ") connected to " << r->hostname << endl;
-
+        if (cs != nullptr) cs->update();
         packet->WriteToSocket(target_sock);
     }
 
-
-
-
     proxy(client_socket,target_sock);
     close(client_socket);
-    cout << "closed client socket" << endl;
     close(target_sock);
+    if (cs != nullptr) cs->update();
     return;
 }
 
 int main() {
+    signal(SIGPIPE, SIG_IGN); 
+    createConfig("config.json");
+    loadConfig("config.json");
+    if (!load_routes()) {
+        cout << "Failed to load routes" << endl;
+        return 1;
+    }
+    thread(file_watcher, "routes.json").detach();
+
     cout << "Starting" << endl;
     // create socket
     int server_socket = socket(AF_INET, SOCK_STREAM, 0);
@@ -214,9 +197,9 @@ int main() {
 
     // bind
     struct sockaddr_in server_address;
-    server_address.sin_family = AF_INET;
-    server_address.sin_port = htons(25565); 
-    server_address.sin_addr.s_addr = INADDR_ANY; //TODO
+    server_address.sin_family = AF_INET; // TODO
+    server_address.sin_port = htons((*config).port); 
+    server_address.sin_addr.s_addr = INADDR_ANY;
 
     int bind_status = bind(server_socket, (struct sockaddr*)&server_address, sizeof(server_address));
     if (bind_status == -1) {
@@ -232,8 +215,7 @@ int main() {
     }
     cout << "Listening." << endl;
 
-    std::vector<std::thread> threads;
-
+    thread(clearExpiredServers).detach();
     while (true) {
         struct sockaddr_in client_address;
         socklen_t client_address_size = sizeof(client_address);
@@ -244,17 +226,9 @@ int main() {
             continue;
         }
 
-        threads.emplace_back(handle_client, client_socket);
-    }
-
-    // clean up threads before exiting
-    for (auto& th : threads) {
-        if (th.joinable()) {
-            th.join();
-        }
+        thread(handle_client, client_socket).detach();
     }
 
     close(server_socket);
-
     return 0;
 }

@@ -110,7 +110,9 @@ std::vector<uint8_t> Buffer::getData() const {
 }
 
 void Buffer::clear() {
-    buffer.erase(buffer.begin(), buffer.end());
+    buffer.clear();
+    buffer.resize(0);
+    buffer.shrink_to_fit();
 }
 
 

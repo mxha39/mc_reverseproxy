@@ -10,7 +10,7 @@ uint32_t VarInt::getValue() const {
     return value;
 }
 
-void VarInt::readFromSocket(int socketfd) {
+bool VarInt::readFromSocket(int socketfd) {
     value = 0;
     uint32_t tempValue = 0;
     uint8_t byte = 0;
@@ -19,17 +19,17 @@ void VarInt::readFromSocket(int socketfd) {
     do {
         ssize_t bytesRead = read(socketfd, &byte, sizeof(byte));
         if (bytesRead != sizeof(byte)) {
-            // Handle error or end-of-file
-            std::cerr << "Error reading from socket" << std::endl;
-            return;
+            perror("Error reading from socket");
+            return true;
         }
         
         tempValue |= static_cast<uint32_t>(byte & 0x7F) << shift;
         shift += 7;
         
     } while (byte & 0x80);
-    
+
     value = tempValue;
+    return false;
 }
 
 std::vector<uint8_t> VarInt::toBytes() const {
@@ -46,7 +46,7 @@ std::vector<uint8_t> VarInt::toBytes() const {
         
         bytes.push_back(byte);
     } while (tempValue != 0);
-    
+
     return bytes;
 }
 
@@ -66,7 +66,7 @@ uint32_t VarInt::size() const {
     return size;
 }
 
-void VarInt::writeToSocket(int socketfd) const {
+bool VarInt::writeToSocket(int socketfd) const {
    uint8_t byte;
    uint32_t v = value;
 
@@ -77,12 +77,12 @@ void VarInt::writeToSocket(int socketfd) const {
             byte |= 0x80;
         }
         if (send(socketfd, &byte, sizeof(byte), 0) != 1) {
-            throw std::runtime_error("Error writing varint");
+            perror("Error writing varint");
+            return true;;
         }
     } while (v != 0);
 
-    return;
-
+    return false;
 }
 
 void VarInt::setValue(uint32_t v) {
