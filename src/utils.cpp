@@ -11,8 +11,10 @@
 #include <resolv.h>
 #include <string.h>
 #include <map>
+#include <iomanip>
+#include <sstream>
 
-#define BUFFER_SIZE 4096
+#define BUFFER_SIZE 1024
 
 using namespace std;
 
@@ -58,6 +60,50 @@ bool resolveARecord(string *hostname) {
 
     freeaddrinfo(result);
     return true;
+}
+
+class UUID {
+public:
+    UUID() {
+        for (int i = 0; i < 16; i++) {
+            uuid[i] = 0;
+        }
+    }
+    UUID(const char *uuid) {
+        for (int i = 0; i < 16; i++) {
+            this->uuid[i] = uuid[i];
+        }
+    }
+    UUID(const string &uuid) {
+        for (int i = 0; i < 16; i++) {
+            this->uuid[i] = uuid[i];
+        }
+    }
+    std::string toString() const {
+        std::stringstream s_stream;
+        s_stream << std::hex << std::setfill('0');
+        for (int i = 0; i < 16; ++i) {
+            if (i == 4 || i == 6 || i == 8 || i == 10) {
+                s_stream << "-";
+            }
+            s_stream << std::setw(2) << static_cast<unsigned>(static_cast<unsigned char>(uuid[i]));
+        }
+        return s_stream.str();
+    }
+    char *get() {
+        return uuid;
+    }
+private:
+    char uuid[16];
+};
+
+std::string uuidToString(const char uuid[16]) {
+    std::stringstream ss;
+    ss << std::hex << std::setfill('0');
+    for (int i = 0; i < 16; ++i) {
+        ss << std::setw(2) << static_cast<unsigned>(static_cast<unsigned char>(uuid[i]));
+    }
+    return ss.str();
 }
 
 string resolve_minecraft_srv(const string &host) {

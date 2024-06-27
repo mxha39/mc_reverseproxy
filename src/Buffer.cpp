@@ -98,6 +98,13 @@ void Buffer::writeByte(uint8_t byte) {
     buffer.push_back(byte);
 }
 
+
+uint8_t Buffer::readByte() {
+    uint8_t byte = buffer[0];
+    erase(1);
+    return byte;
+}
+
 std::vector<uint8_t> Buffer::getData() const {
     return buffer;
 }

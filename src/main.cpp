@@ -1,6 +1,6 @@
 #include <iostream>
 #include <vector>
-
+#include <mutex>
 #include "header/Packet.h"
 #include "utils.cpp"
 
@@ -28,22 +28,95 @@ struct Handshake_Packet {
     }
 };
 
+struct LoginPacket {
+    string username;
+    UUID uuid;
+    void readFromBuffer(Buffer *buf) {
+        username = buf->readString();
+        char uid[16];
+        for (int i = 0; i < 16; i++) {
+            uid[i] = buf->readByte();
+        }
+        uuid = uid;        
+    }
+    void writeToBuffer(Buffer *buf) {
+        buf->writeString(username);
+        for (int i = 0; i < 16; i++) {
+            buf->writeByte(uuid.get()[i]);
+        }
+    }
+};
 struct Route {
     string hostname;
     string address;
     uint16_t port;
 };
+mutex routesMux;
 
 vector<Route> routes = {
     {"hyp.local","hypixel.net", 25565},
     {"timolia.local", "timolia.de",25565},
     {"gomme.local", "gommehd.net", 25565}
 };
-// todo: mutex
+
+Route* findRoute(const string& hostname) {
+    lock_guard<mutex> lock(routesMux);
+    for (auto& route : routes) {
+        if (route.hostname == hostname) {
+            return &route;
+        }
+    }
+    return nullptr;
+}
+
+
+
+enum Placeholder_state {
+    OFFLINE = 1,
+    UNKNOWN = 2
+};
+
+void handle_placeholder(int client_socket, uint32_t next_state, Placeholder_state state) {
+    unique_ptr<Packet> packet = make_unique<Packet>();
+    if ((*packet).ReadFromSocket(client_socket)) {
+        cout << "close" << endl;
+        close(client_socket);
+        return;
+    }
+    if (packet->ID.getValue() != 0x00) {
+        return;
+    }
+
+    packet->clear();
+    packet->ID = 0x00;
+    if(next_state == 1) {
+        if (state == UNKNOWN) {
+            packet->data.writeString("{\"version\":{\"name\":\"Unknown\",\"protocol\":0},\"players\":{\"max\":0,\"online\":0},\"description\":{\"text\":\"§bProxy §8- §cUnknown Route\"}}");
+        } else {
+            packet->data.writeString("{\"version\":{\"name\":\"Offline\",\"protocol\":0},\"players\":{\"max\":0,\"online\":0},\"description\":{\"text\":\"§bProxy §8- §cServer offline\"}}");
+        }
+    } else {
+        if (state == UNKNOWN) {
+            packet->data.writeString("{\"text\":\"§cUnknown Route\"}");
+        } else {
+            packet->data.writeString("{\"text\":\"§cServer offline\"}");
+        }
+    }
+    packet->WriteToSocket(client_socket);
+
+    packet->clear();
+    packet->ReadFromSocket(client_socket);
+    if (packet->ID.getValue() != 0x01) {
+        return;
+    }
+    packet->WriteToSocket(client_socket);
+
+    return;
+}
 
 
 void handle_client(int client_socket) {
-    Packet *packet = new Packet();
+    unique_ptr<Packet> packet = make_unique<Packet>();
     if ((*packet).ReadFromSocket(client_socket)) {
         cout << "close" << endl;
         close(client_socket);
@@ -53,18 +126,10 @@ void handle_client(int client_socket) {
     Handshake_Packet hs;
     hs.readFromBuffer(&(packet->data));
 
-    Route *r;
-
-    cout<< "hostname: " << hs.hostname << endl;
-    for (auto &route : routes) {
-        if (route.hostname == hs.hostname) {
-            r = &route;
-            break;
-        }
-    }
+    Route* r = findRoute(hs.hostname);
 
     if (r == nullptr) {
-        cout << "Route not found" << endl;
+        handle_placeholder(client_socket, hs.nextState.getValue(), UNKNOWN);
         close(client_socket);
         return;
     }
@@ -76,8 +141,7 @@ void handle_client(int client_socket) {
     int port = stoi(resolved_addr.substr(resolved_addr.find(":") + 1));
     resolveARecord(&addr);
 
-
-    int target_sock = dial(addr, port); //dont forget to change port according to srv
+    int target_sock = dial(addr, port);
     if (target_sock < 0) {
         close(client_socket);
         close(target_sock);
@@ -89,6 +153,40 @@ void handle_client(int client_socket) {
         close(target_sock);
         return;
     }
+
+
+    if (hs.nextState.getValue() == 2) {
+        //read login packet
+        packet->clear();
+        if ((*packet).ReadFromSocket(client_socket)) {
+            cout << "close" << endl;
+            close(client_socket);
+            return;
+        }
+        if (packet->ID.getValue() != 0x00) {
+            return;
+        }
+        
+        unique_ptr<LoginPacket> lp = make_unique<LoginPacket>();
+        
+
+        lp->readFromBuffer(&(packet->data));
+        lp->writeToBuffer(&(packet->data));
+
+        string client_IP;
+        struct sockaddr_in addr;
+        socklen_t addr_size = sizeof(addr);
+        getpeername(client_socket, (struct sockaddr *)&addr, &addr_size);
+        client_IP = inet_ntoa(addr.sin_addr);
+        
+
+
+        cout << "User " << lp->username <<  " (" << client_IP << ") connected to " << r->hostname << endl;
+
+        packet->WriteToSocket(target_sock);
+    }
+
+
 
 
     proxy(client_socket,target_sock);
