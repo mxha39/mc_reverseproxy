@@ -23,7 +23,7 @@ SRC_FILES = $(filter $(SRC_DIR)/%, \
 # Rule to build the executable
 $(EXECUTABLE): $(SRC_FILES)
 	mkdir -p $(BUILD_DIR)
-	g++ $(SRC_FILES) -o $(EXECUTABLE)
+	g++ $(SRC_FILES) -o $(EXECUTABLE) -lresolv
 
 # Phony target to clean the build directory
 .PHONY: clean
@@ -33,4 +33,5 @@ clean:
 
 .PHONY: run
 run: $(EXECUTABLE)
+	clear
 	./$(EXECUTABLE)

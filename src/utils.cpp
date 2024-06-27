@@ -1,16 +1,97 @@
 #include <iostream>
 #include <cstring>
-#include <sys/types.h>
-#include <sys/socket.h>
-#include <netinet/in.h>
-#include <unistd.h>
 #include <thread>
-#include <vector>
 #include <arpa/inet.h>
+#include <netdb.h>
+
+#include <arpa/nameser.h>
+#include <functional>
+#include <iostream>
+#include <netinet/in.h>
+#include <resolv.h>
+#include <string.h>
+#include <map>
 
 #define BUFFER_SIZE 4096
 
 using namespace std;
+
+
+void handleSRVRecord(const ns_rr &rr, const ns_msg &nsMsg, string &host) {
+    char name[1024];
+    dn_expand(ns_msg_base(nsMsg), ns_msg_end(nsMsg), ns_rr_rdata(rr) + 6, name, sizeof(name));
+    host = string(name) + ":" + to_string(ntohs(*((unsigned short*)ns_rr_rdata(rr) + 2)));
+}
+
+
+bool resolveARecord(string *hostname) {
+    struct addrinfo hints;
+    struct addrinfo *result, *rp;
+    int status;
+
+    memset(&hints, 0, sizeof(struct addrinfo));
+    hints.ai_family = AF_INET;     // IPv4, TODO: support IPv6
+    hints.ai_socktype = SOCK_STREAM;
+    hints.ai_flags = 0;
+    hints.ai_protocol = 0;         // Any protocol
+
+    status = getaddrinfo(hostname->c_str(), nullptr, &hints, &result);
+    if (status != 0) {
+        cerr << "getaddrinfo error: " << gai_strerror(status) << endl;
+        return false;
+    }
+
+    // Find the first IPv4 address and update the hostname pointer
+    for (rp = result; rp != nullptr; rp = rp->ai_next) {
+        if (rp->ai_family == AF_INET) {
+            struct sockaddr_in *addr = (struct sockaddr_in *)rp->ai_addr;
+            char ipAddr[INET_ADDRSTRLEN];
+            const char *ip = inet_ntop(AF_INET, &(addr->sin_addr), ipAddr, INET_ADDRSTRLEN);
+            if (ip != nullptr) {
+                *hostname = ip; // Update the hostname pointer to the first IPv4 address
+                break;
+            } else {
+                cerr << "Failed to convert address to string" << endl;
+            }
+        }
+    }
+
+    freeaddrinfo(result);
+    return true;
+}
+
+string resolve_minecraft_srv(const string &host) {
+    string full_host = "_minecraft._tcp." + host;
+    res_init();
+
+    int response;
+    ns_msg nsMsg;
+
+    unsigned char query_buffer[1024];
+    {
+        ns_type type = ns_t_srv;
+        response = res_query(full_host.data(), C_IN, type, query_buffer, sizeof(query_buffer));
+        if (response < 0) {
+            return host+":25565";
+        }
+    }
+
+    ns_initparse(query_buffer, response, &nsMsg);
+
+    for (int x = 0; x < ns_msg_count(nsMsg, ns_s_an); x++) {
+        ns_rr rr;
+        ns_parserr(&nsMsg, ns_s_an, x, &rr);
+        if (ns_rr_type(rr) == ns_t_srv) {
+            unsigned short port = ntohs(*((unsigned short*)ns_rr_rdata(rr) + 2)); // Port
+            char name[1024];
+            dn_expand(ns_msg_base(nsMsg), ns_msg_end(nsMsg), ns_rr_rdata(rr) + 6, name, sizeof(name)); // Name
+            string host_info = string(name) + ":" + to_string(port);
+            return host_info;
+        }
+    }
+
+    return host+":25565";
+}
 
 int dial(const std::string &target_ip, int target_port) {
     int target_sock = socket(AF_INET, SOCK_STREAM, 0);
@@ -46,7 +127,8 @@ void proxy(int client_sock, int target_sock) {
         while ((bytes = read(from, buffer, BUFFER_SIZE)) > 0) {
             if (write(to, buffer, bytes) < 0) {
                 std::cerr << "Write error." << std::endl;
-                break;
+                // break;
+                continue;
             }
         }
         close(from);

@@ -1,16 +1,9 @@
 #include <iostream>
-#include <cstring>
-#include <sys/types.h>
-#include <sys/socket.h>
-#include <netinet/in.h>
-#include <unistd.h>
-#include <thread>
 #include <vector>
-#include <arpa/inet.h>
 
 #include "header/Packet.h"
 #include "utils.cpp"
-#include <iomanip>
+
 
 using namespace std;
 
@@ -35,6 +28,19 @@ struct Handshake_Packet {
     }
 };
 
+struct Route {
+    string hostname;
+    string address;
+    uint16_t port;
+};
+
+vector<Route> routes = {
+    {"hyp.local","hypixel.net", 25565},
+    {"timolia.local", "timolia.de",25565},
+    {"gomme.local", "gommehd.net", 25565}
+};
+// todo: mutex
+
 
 void handle_client(int client_socket) {
     Packet *packet = new Packet();
@@ -43,19 +49,40 @@ void handle_client(int client_socket) {
         close(client_socket);
         return;
     }
-    
 
-    int target_sock = dial("209.222.115.96", 25565); // hypixel ipv4
+    Handshake_Packet hs;
+    hs.readFromBuffer(&(packet->data));
+
+    Route *r;
+
+    cout<< "hostname: " << hs.hostname << endl;
+    for (auto &route : routes) {
+        if (route.hostname == hs.hostname) {
+            r = &route;
+            break;
+        }
+    }
+
+    if (r == nullptr) {
+        cout << "Route not found" << endl;
+        close(client_socket);
+        return;
+    }
+    hs.hostname = r->address;
+    hs.writeToBuffer(&(packet->data));
+    
+    string resolved_addr = resolve_minecraft_srv(r->address);
+    string addr = resolved_addr.substr(0, resolved_addr.find(":"));
+    int port = stoi(resolved_addr.substr(resolved_addr.find(":") + 1));
+    resolveARecord(&addr);
+
+
+    int target_sock = dial(addr, port); //dont forget to change port according to srv
     if (target_sock < 0) {
         close(client_socket);
         close(target_sock);
         return;
     }
-
-    Handshake_Packet hs;
-    hs.readFromBuffer(&(packet->data));
-    hs.hostname = "hypixel.net";
-    hs.writeToBuffer(&(packet->data));
 
     if ((*packet).WriteToSocket(target_sock)) {
         close(client_socket);
@@ -71,8 +98,8 @@ void handle_client(int client_socket) {
     return;
 }
 
-
 int main() {
+    cout << "Starting" << endl;
     // create socket
     int server_socket = socket(AF_INET, SOCK_STREAM, 0);
     if (server_socket == -1) {

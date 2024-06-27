@@ -1,7 +1,4 @@
 #include "header/Packet.h"
-#include <iostream>
-#include <unistd.h>
-#include <sys/socket.h>
 
 Packet::Packet() {
     ID = 0;
